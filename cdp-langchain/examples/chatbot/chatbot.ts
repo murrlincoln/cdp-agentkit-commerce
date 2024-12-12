@@ -4,6 +4,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { ChatOpenAI } from "@langchain/openai";
+import { CommerceSDK } from "commerce-node";
 import * as dotenv from "dotenv";
 import * as fs from "fs";
 import * as readline from "readline";
@@ -26,17 +27,11 @@ dotenv.config();
 // Configure a file to persist the agent's CDP MPC Wallet Data
 const WALLET_DATA_FILE = "wallet_data_mainnet.txt";
 
-const apiKeyName = process.env.CDP_API_KEY_NAME;
-const privateKey = process.env.CDP_API_KEY_PRIVATE_KEY;
-
-let coinbase = Coinbase.configureFromJson({ filePath: "./cdp_api_key.json" });
-
-// Add this constant after validateEnvironment()
-const COMMERCE_API_URL = "https://api.commerce.coinbase.com/charges";
-
-// Add these constants after the COMMERCE_API_URL definition
-const PAY_BASE_URL = "https://pay.coinbase.com/buy/select-asset";
-const PROJECT_ID = "a61fb36c-4a21-4315-a8aa-b2bb07190dc6";
+const commerce = new CommerceSDK({
+  apiKey: process.env.COINBASE_COMMERCE_KEY as string,
+  baseUrl: "https://api.commerce.coinbase.com",
+  baseRpcUrl: "https://chain-proxy.wallet.coinbase.com",
+});
 
 // Add the create charge function before initializeAgent()
 const CREATE_CHARGE_PROMPT = `
@@ -49,9 +44,7 @@ const CreateChargeInput = z.object({
   name: z.string().describe("Name/title of the charge e.g. 'Coffee Purchase'"),
   description: z
     .string()
-    .describe(
-      "Description of what is being charged for e.g. 'Large coffee with extra shot'",
-    ),
+    .describe("Description of what is being charged for e.g. 'Large coffee with extra shot'"),
   amount: z.string().describe("Price amount as string e.g. '5.99'"),
   currency: z.string().describe("Three letter currency code e.g. 'USD'"),
   pricing_type: z
@@ -77,100 +70,118 @@ async function createCharge(
   },
 ): Promise<string> {
   try {
-    const params: ChargeRequest = {
-      name: args.name,
-      description: args.description,
-      pricing_type: args.pricing_type,
+    const { data: response } = await commerce.charges.createCharge({
       local_price: {
         amount: args.amount,
         currency: args.currency,
       },
-    };
-
-    const response = await fetch(COMMERCE_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CC-Api-Key": process.env.COINBASE_COMMERCE_KEY || "",
-      },
-      body: JSON.stringify(params),
+      pricing_type: args.pricing_type,
     });
 
-    if (!response.ok) {
-      throw new Error(`Failed to create charge: ${response.statusText}`);
-    }
-
-    const data = await response.json();
     return `Successfully created charge:
-      Name: ${data.data.name}
-      Description: ${data.data.description}
-      Amount: ${data.data.pricing.local.amount} ${data.data.pricing.local.currency}
-      Hosted URL: ${data.data.hosted_url}`;
+      Name: ${response.data.name}
+      Description: ${response.data.description}
+      Amount: ${response.data.pricing.local.amount} ${response.data.pricing.local.currency}
+      Hosted URL: ${response.data.hostedUrl}`;
   } catch (error) {
     console.error("Error creating charge:", error);
     throw error;
   }
 }
 
-
-// Add this prompt definition after CREATE_CHARGE_PROMPT
-const CREATE_PAY_LINK_PROMPT = `
-This tool creates a Coinbase Onramp link that allows users to purchase crypto and send it directly to a specified wallet address.
-The link will open Coinbase Onramp with the wallet address pre-filled.
-Use this tool if you don't have enough funds to complete a certain action.
+// Define the prompt for the hydrate charge action
+const HYDRATE_CHARGE_PROMPT = `
+This tool will hydrate a charge using the provided charge ID and chain ID.
 `;
 
-// Add this schema after CreateChargeInput
-const CreatePayLinkInput = z.object({
-  blockchain: z
-    .string()
-    .default("base")
-    .describe("Blockchain network (defaults to 'base')"),
+// Define the input schema using Zod
+const HydrateChargeInput = z.object({
+  charge_id: z.string().describe("The ID of the charge to hydrate. e.g. 'charge_12345'"),
+  chain_id: z.number().describe("The ID of the blockchain to use. e.g. 1 for Ethereum Mainnet"),
 });
 
-
 /**
- * Creates a Coinbase Pay link for the agent's wallet
+ * Hydrates a charge using the provided charge ID and chain ID
  *
- * @param wallet - CDP wallet instance used to get the destination address
- * @param args - Object containing optional parameters like blockchain
- * @returns Formatted pay link URL
+ * @param wallet - The wallet to use for hydrating the charge
+ * @param args - The arguments containing charge_id and chain_id
+ * @returns A message indicating the success of the operation
  */
-async function createPayLink(
+async function hydrateCharge(
   wallet: Wallet,
   args: {
-    blockchain: string;
+    charge_id: string;
+    chain_id: number;
+  },
+): Promise<string> {
+  const walletAddress = await wallet.getDefaultAddress();
+  try {
+    const { data: response } = await commerce.charges.hydrateCharge(args.charge_id, {
+      chain_id: args.chain_id,
+      sender: walletAddress.getId(),
+    });
+
+    return `Successfully hydrated charge:
+      Web3 Data: ${JSON.stringify(response.data.web3Data, null, 2)}`;
+  } catch (error) {
+    console.error("Error creating charge:", error);
+    throw error;
+  }
+}
+
+// Define the prompt for the pay charge action
+const PAY_CHARGE_PROMPT = `
+This tool will pay a charge using the provided charge ID and chain ID.
+`;
+
+// Define the input schema using Zod
+const PayChargeInput = z.object({
+  charge_id: z.string().describe("The ID of the charge to pay. e.g. 'charge_12345'"),
+  chain_id: z.number().describe("The ID of the blockchain to use. e.g. 1 for Ethereum Mainnet"),
+});
+
+/**
+ * Pays a charge using the provided charge ID and chain ID
+ *
+ * @param wallet - The wallet to use for paying the charge
+ * @param args - The arguments containing charge_id and chain_id
+ * @returns A message indicating the success of the operation
+ */
+async function payCharge(
+  wallet: Wallet,
+  args: {
+    charge_id: string;
+    chain_id: number;
   },
 ): Promise<string> {
   try {
-    // Get the wallet's address as a string
-    const address = (await wallet.getDefaultAddress()).getId();
-
-    console.log(wallet.getNetworkId());
-
-    // Check what network the wallet is on and return an error if it's not 'base-mainnet'
-    if (wallet.getNetworkId() == "base-sepolia") {
-      return "Error: Wallet is not on the Base Sepolia network, use the faucet instead";
-    }
-
-    // Create the addresses parameter as a simple object
-    const addressesObj = {
-      [address.toString()]: [args.blockchain],
+    const USDC_CURRENCY = {
+      contractAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as `0x${string}`,
+      isNativeAsset: false,
+      decimals: 6,
     };
+    const walletAddress = await wallet.getDefaultAddress();
+    const { data: hydratedCharge } = await commerce.charges.hydrateCharge(args.charge_id, {
+      chain_id: args.chain_id,
+      sender: walletAddress.getId(),
+    });
 
-    // Create the URL with parameters
-    const payUrl = new URL(PAY_BASE_URL);
-    payUrl.searchParams.append("appId", PROJECT_ID);
-    payUrl.searchParams.append("addresses", JSON.stringify(addressesObj));
+    const privateKey = walletAddress.export();
+    const payerWallet = commerce.wallets.createWallet({
+      secretWords: privateKey,
+      chainId: 8453,
+    });
+    console.log(payerWallet.account?.address);
+    const transactionHash = await commerce.charges.payCharge({
+      walletClient: payerWallet,
+      charge: hydratedCharge.data,
+      currency: USDC_CURRENCY,
+    });
 
-    return `Generated Coinbase Pay Link:
-      URL: ${payUrl.toString()}
-      
-      This link will allow users to purchase crypto and send it directly to your wallet address:
-      Wallet Address: ${address}
-      Blockchain: ${args.blockchain}`;
+    return `Successfully paid charge:
+      Transaction Hash: ${transactionHash}`;
   } catch (error) {
-    console.error("Error creating pay link:", error);
+    console.error("Error creating charge:", error);
     throw error;
   }
 }
@@ -226,18 +237,33 @@ async function initializeAgent() {
 
     tools.push(createChargeTool);
 
-    // Modify initializeAgent() to add the new tool - add this after the createChargeTool
-    const createPayLinkTool = new CdpTool(
+    // Create the CdpTool instance
+    const hydrateChargeTool = new CdpTool(
       {
-        name: "create_pay_link",
-        description: CREATE_PAY_LINK_PROMPT,
-        argsSchema: CreatePayLinkInput,
-        func: createPayLink,
+        name: "hydrate_charge",
+        description: HYDRATE_CHARGE_PROMPT,
+        argsSchema: HydrateChargeInput,
+        func: hydrateCharge,
       },
-      agentkit,
+      agentkit, // this should be whatever the instantiation of CdpWrapper is
     );
 
-    tools.push(createPayLinkTool);
+    // Add the tool to your toolkit
+    tools.push(hydrateChargeTool);
+
+    // Create the CdpTool instance
+    const payChargeTool = new CdpTool(
+      {
+        name: "pay_charge",
+        description: PAY_CHARGE_PROMPT,
+        argsSchema: PayChargeInput,
+        func: payCharge,
+      },
+      agentkit, // this should be whatever the instantiation of CdpWrapper is
+    );
+
+    // Add the tool to your toolkit
+    tools.push(payChargeTool);
 
     // Store buffered conversation history in memory
     const memory = new MemorySaver();
@@ -281,10 +307,7 @@ async function runAutonomousMode(agent: any, config: any, interval = 10) {
         "Be creative and do something interesting on the blockchain. " +
         "Choose an action or set of actions and execute it that highlights your abilities.";
 
-      const stream = await agent.stream(
-        { messages: [new HumanMessage(thought)] },
-        config,
-      );
+      const stream = await agent.stream({ messages: [new HumanMessage(thought)] }, config);
 
       for await (const chunk of stream) {
         if ("agent" in chunk) {
@@ -295,7 +318,7 @@ async function runAutonomousMode(agent: any, config: any, interval = 10) {
         console.log("-------------------");
       }
 
-      await new Promise((resolve) => setTimeout(resolve, interval * 1000));
+      await new Promise(resolve => setTimeout(resolve, interval * 1000));
     } catch (error) {
       if (error instanceof Error) {
         console.error("Error:", error.message);
@@ -320,7 +343,7 @@ async function runChatMode(agent: any, config: any) {
   });
 
   const question = (prompt: string): Promise<string> =>
-    new Promise((resolve) => rl.question(prompt, resolve));
+    new Promise(resolve => rl.question(prompt, resolve));
 
   try {
     while (true) {
@@ -330,10 +353,7 @@ async function runChatMode(agent: any, config: any) {
         break;
       }
 
-      const stream = await agent.stream(
-        { messages: [new HumanMessage(userInput)] },
-        config,
-      );
+      const stream = await agent.stream({ messages: [new HumanMessage(userInput)] }, config);
 
       for await (const chunk of stream) {
         if ("agent" in chunk) {
@@ -366,7 +386,7 @@ async function chooseMode(): Promise<"chat" | "auto"> {
   });
 
   const question = (prompt: string): Promise<string> =>
-    new Promise((resolve) => rl.question(prompt, resolve));
+    new Promise(resolve => rl.question(prompt, resolve));
 
   while (true) {
     console.log("\nAvailable modes:");
@@ -411,7 +431,7 @@ async function main() {
 
 if (require.main === module) {
   console.log("Starting Agent...");
-  main().catch((error) => {
+  main().catch(error => {
     console.error("Fatal error:", error);
     process.exit(1);
   });
