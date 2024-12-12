@@ -182,7 +182,7 @@ async function payCharge(
       chainId: 8453,
     });
     console.log(payerWallet.account?.address);
-    const transactionHash = await commerce.charges.payCharge({
+    const { transactionHash } = await commerce.charges.payCharge({
       walletClient: payerWallet,
       charge: hydratedCharge.data,
       currency: USDC_CURRENCY,
