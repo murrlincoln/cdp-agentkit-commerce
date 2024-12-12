@@ -27,6 +27,15 @@ dotenv.config();
 // Configure a file to persist the agent's CDP MPC Wallet Data
 const WALLET_DATA_FILE = "wallet_data_mainnet.txt";
 
+
+// for onramp
+const apiKeyName = process.env.CDP_API_KEY_NAME;
+const privateKey = process.env.CDP_API_KEY_PRIVATE_KEY;
+
+let coinbase = Coinbase.configureFromJson({ filePath: "./cdp_api_key.json" });
+const PAY_BASE_URL = "https://pay.coinbase.com/buy/select-asset";
+const PROJECT_ID = "a61fb36c-4a21-4315-a8aa-b2bb07190dc6";
+
 const commerce = new CommerceSDK({
   apiKey: process.env.COINBASE_COMMERCE_KEY as string,
   baseUrl: "https://api.commerce.coinbase.com",
@@ -186,6 +195,70 @@ async function payCharge(
   }
 }
 
+
+
+// Add this prompt definition after CREATE_CHARGE_PROMPT
+const CREATE_PAY_LINK_PROMPT = `
+This tool creates a Coinbase Onramp link that allows users to purchase crypto and send it directly to a specified wallet address.
+The link will open Coinbase Onramp with the wallet address pre-filled.
+Use this tool if you don't have enough funds to complete a certain action.
+`;
+
+// Add this schema after CreateChargeInput
+const CreatePayLinkInput = z.object({
+  blockchain: z
+    .string()
+    .default("base")
+    .describe("Blockchain network (defaults to 'base')"),
+});
+
+
+/**
+ * Creates a Coinbase Pay link for the agent's wallet
+ *
+ * @param wallet - CDP wallet instance used to get the destination address
+ * @param args - Object containing optional parameters like blockchain
+ * @returns Formatted pay link URL
+ */
+async function createPayLink(
+  wallet: Wallet,
+  args: {
+    blockchain: string;
+  },
+): Promise<string> {
+  try {
+    // Get the wallet's address as a string
+    const address = (await wallet.getDefaultAddress()).getId();
+
+    console.log(wallet.getNetworkId());
+
+    // Check what network the wallet is on and return an error if it's not 'base-mainnet'
+    if (wallet.getNetworkId() == "base-sepolia") {
+      return "Error: Wallet is not on the Base Sepolia network, use the faucet instead";
+    }
+
+    // Create the addresses parameter as a simple object
+    const addressesObj = {
+      [address.toString()]: [args.blockchain],
+    };
+
+    // Create the URL with parameters
+    const payUrl = new URL(PAY_BASE_URL);
+    payUrl.searchParams.append("appId", PROJECT_ID);
+    payUrl.searchParams.append("addresses", JSON.stringify(addressesObj));
+
+    return `Generated Coinbase Pay Link:
+      URL: ${payUrl.toString()}
+      
+      This link will allow users to purchase crypto and send it directly to your wallet address:
+      Wallet Address: ${address}
+      Blockchain: ${args.blockchain}`;
+  } catch (error) {
+    console.error("Error creating pay link:", error);
+    throw error;
+  }
+}
+
 /**
  * Initialize the agent with CDP Agentkit
  *
@@ -193,10 +266,10 @@ async function payCharge(
  */
 async function initializeAgent() {
   try {
-    // Initialize LLM with xAI configuration
+    // Initialize LLM with OpenAI configuration
     const llm = new ChatOpenAI({
       model: "gpt-4o",
-      apiKey: process.env.XAI_API_KEY,
+      apiKey: process.env.OPENAI_API_KEY,
     });
 
     let walletDataStr: string | null = null;
@@ -264,6 +337,19 @@ async function initializeAgent() {
 
     // Add the tool to your toolkit
     tools.push(payChargeTool);
+
+    // Modify initializeAgent() to add the new tool - add this after the createChargeTool
+    const createPayLinkTool = new CdpTool(
+      {
+        name: "create_pay_link",
+        description: CREATE_PAY_LINK_PROMPT,
+        argsSchema: CreatePayLinkInput,
+        func: createPayLink,
+      },
+      agentkit,
+    );
+
+    tools.push(createPayLinkTool);
 
     // Store buffered conversation history in memory
     const memory = new MemorySaver();
