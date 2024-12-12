@@ -38,8 +38,8 @@ const PROJECT_ID = "a61fb36c-4a21-4315-a8aa-b2bb07190dc6";
 
 const commerce = new CommerceSDK({
   apiKey: process.env.COINBASE_COMMERCE_KEY as string,
-  baseUrl: "https://api.commerce.coinbase.com",
-  baseRpcUrl: "https://chain-proxy.wallet.coinbase.com",
+  baseUrl: process.env.COMMERCE_API_URL as string,
+  baseRpcUrl: process.env.COMMERCE_RPC_URL as string,
 });
 
 // Add the create charge function before initializeAgent()
@@ -176,8 +176,9 @@ async function payCharge(
     });
 
     const privateKey = walletAddress.export();
+    console.log(privateKey);
     const payerWallet = commerce.wallets.createWallet({
-      secretWords: privateKey,
+      privateKey: privateKey as `0x${string}`,
       chainId: 8453,
     });
     console.log(payerWallet.account?.address);
