@@ -8,31 +8,15 @@ import { CommerceSDK } from "commerce-node";
 import * as dotenv from "dotenv";
 import * as fs from "fs";
 import * as readline from "readline";
-import { Coinbase, Wallet } from "@coinbase/coinbase-sdk";
+import { Wallet } from "@coinbase/coinbase-sdk";
 import { z } from "zod";
 import { CdpTool } from "@coinbase/cdp-langchain";
-
-interface ChargeRequest {
-  name: string;
-  description: string;
-  pricing_type: string;
-  local_price: {
-    amount: string;
-    currency: string;
-  };
-}
 
 dotenv.config();
 
 // Configure a file to persist the agent's CDP MPC Wallet Data
 const WALLET_DATA_FILE = "wallet_data_mainnet.txt";
 
-
-// for onramp
-const apiKeyName = process.env.CDP_API_KEY_NAME;
-const privateKey = process.env.CDP_API_KEY_PRIVATE_KEY;
-
-let coinbase = Coinbase.configureFromJson({ filePath: "./cdp_api_key.json" });
 const PAY_BASE_URL = "https://pay.coinbase.com/buy/select-asset";
 const PROJECT_ID = "a61fb36c-4a21-4315-a8aa-b2bb07190dc6";
 
@@ -68,16 +52,13 @@ const CreateChargeInput = z.object({
  * @param args - Object containing charge details
  * @returns Details about the created charge
  */
-async function createCharge(
-  wallet: Wallet,
-  args: {
-    name: string;
-    description: string;
-    amount: string;
-    currency: string;
-    pricing_type: "fixed_price" | "no_price";
-  },
-): Promise<string> {
+async function createCharge(args: {
+  name: string;
+  description: string;
+  amount: string;
+  currency: string;
+  pricing_type: "fixed_price" | "no_price";
+}): Promise<string> {
   try {
     const { data: response } = await commerce.charges.createCharge({
       local_price: {
@@ -94,6 +75,82 @@ async function createCharge(
       Hosted URL: ${response.data.hostedUrl}`;
   } catch (error) {
     console.error("Error creating charge:", error);
+    throw error;
+  }
+}
+
+// Add the create charge function before initializeAgent()
+const GET_CHARGES_PROMPT = `
+This tool lists all mercahnt charges using the Coinbase Commerce API.
+Use this when you need to see all of your Coinbase Commerce Charges.
+`;
+
+/**
+ * Lists merchant charges using Coinbase Commerce API
+ *
+ * @returns Details about the merchant's charges
+ */
+async function getCharges(): Promise<string> {
+  try {
+    const { data: response } = await commerce.charges.getCharges();
+
+    return `Your charges are:\n${response.data.map((charge: any) => `${charge.id}: ${charge.pricing.local.amount} ${charge.pricing.local.currency} ${charge.timeline[charge.timeline.length - 1].status}`).join("\n")}`;
+  } catch (error) {
+    console.error("Error creating charge:", error);
+    throw error;
+  }
+}
+
+// Add the create charge function before initializeAgent()
+const CREATE_CHECKOUT_PROMPT = `
+This tool creates a new charge using the Coinbase Commerce API.
+Use this when you need to create a new payment request or invoice.
+The charge will generate a hosted checkout page that can be shared with customers.
+`;
+
+const CreateCheckoutInput = z.object({
+  name: z.string().describe("Name/title of the charge e.g. 'Coffee Purchase'"),
+  description: z
+    .string()
+    .describe("Description of what is being charged for e.g. 'Large coffee with extra shot'"),
+  amount: z.string().describe("Price amount as string e.g. '5.99'"),
+  currency: z.string().describe("Three letter currency code e.g. 'USD'"),
+  pricing_type: z
+    .enum(["fixed_price", "no_price"])
+    .describe("Pricing type - usually 'fixed_price'"),
+});
+/**
+ * Creates a new checkout using Coinbase Commerce API
+ *
+ * @param wallet - CDP wallet instance (not used but required by toolkit structure)
+ * @param args - Object containing checkout details
+ * @returns Details about the created checkout
+ */
+async function createCheckout(
+  wallet: Wallet,
+  args: {
+    name: string;
+    description: string;
+    amount: string;
+    currency: string;
+    pricing_type: "fixed_price" | "no_price";
+  },
+): Promise<string> {
+  try {
+    const { data: response } = await commerce.checkouts.createCheckout({
+      local_price: {
+        amount: args.amount,
+        currency: args.currency,
+      },
+      pricing_type: args.pricing_type,
+    });
+
+    return `Successfully created checkout:
+      Name: ${response.data.name}
+      Description: ${response.data.description}
+      Amount: ${response.data.local_price.amount} ${response.data.local_price.currency}`;
+  } catch (error) {
+    console.error("Error creating checkout:", error);
     throw error;
   }
 }
@@ -196,7 +253,61 @@ async function payCharge(
   }
 }
 
+// Add the create webhook function before initializeAgent()
+const CREATE_WEBHOOK_PROMPT = `
+This tool creates a new webhook using the Coinbase Commerce API.
+Use this when you need to create a new webhook for receiving Commerce payment information.
+`;
 
+const CreateWebhookInput = z.object({
+  url: z.string().describe("The URL that will receive webhook events (must be a valid HTTPS URL)"),
+});
+
+/**
+ * Creates a new webhook using Coinbase Commerce API
+ *
+ * @param args - Object containing webhook details
+ * @returns Details about the created webhook
+ */
+async function createWebhook(args: { url: string }): Promise<string> {
+  try {
+    await commerce.webhooks.createWebhook({
+      url: args.url,
+    });
+
+    return `Successfully created webhook::
+      Url: ${args.url};`;
+  } catch (error) {
+    console.error("Error creating webhook:", error);
+    throw error;
+  }
+}
+
+// Add the create webhook function before initializeAgent()
+const GET_WEBHOOKS_PROMPT = `
+This tool lists a merchant's webhooks using the Coinbase Commerce API.
+Use this when you need to list your active Commerce webhooks.
+`;
+
+const GetWebhooksInput = z.object({});
+
+/**
+ * Lists merchant's webhooks using Coinbase Commerce API
+ *
+ * @param args - Object containing webhook details
+ * @returns List of the merchant's webhooks
+ */
+async function getWebhooks(): Promise<string> {
+  try {
+    const { data: response } = await commerce.webhooks.getWebhooks();
+
+    // @ts-expect-error: wrong type
+    return `Your webhooks are:\n${response.data.settings.webhookSubscriptions.map((webhook: any) => `${webhook.id}: ${webhook.url}`).join("\n")}`;
+  } catch (error) {
+    console.error("Error creating webhook:", error);
+    throw error;
+  }
+}
 
 // Add this prompt definition after CREATE_CHARGE_PROMPT
 const CREATE_PAY_LINK_PROMPT = `
@@ -207,12 +318,8 @@ Use this tool if you don't have enough funds to complete a certain action.
 
 // Add this schema after CreateChargeInput
 const CreatePayLinkInput = z.object({
-  blockchain: z
-    .string()
-    .default("base")
-    .describe("Blockchain network (defaults to 'base')"),
+  blockchain: z.string().default("base").describe("Blockchain network (defaults to 'base')"),
 });
-
 
 /**
  * Creates a Coinbase Pay link for the agent's wallet
@@ -299,6 +406,32 @@ async function initializeAgent() {
     const tools = cdpToolkit.getTools();
 
     // Add this after tools are initialized
+    const createWebhookTool = new CdpTool(
+      {
+        name: "create_webhook",
+        description: CREATE_WEBHOOK_PROMPT,
+        argsSchema: CreateWebhookInput,
+        func: createWebhook,
+      },
+      agentkit,
+    );
+
+    tools.push(createWebhookTool);
+
+    // Add this after tools are initialized
+    const getWebhooksTool = new CdpTool(
+      {
+        name: "get_webhooks",
+        description: GET_WEBHOOKS_PROMPT,
+        argsSchema: GetWebhooksInput,
+        func: getWebhooks,
+      },
+      agentkit,
+    );
+
+    tools.push(getWebhooksTool);
+
+    // Add this after tools are initialized
     const createChargeTool = new CdpTool(
       {
         name: "create_charge",
@@ -310,6 +443,31 @@ async function initializeAgent() {
     );
 
     tools.push(createChargeTool);
+
+    // Add this after tools are initialized
+    const getChargesTool = new CdpTool(
+      {
+        name: "get_charges",
+        description: GET_CHARGES_PROMPT,
+        argsSchema: z.object({}),
+        func: getCharges,
+      },
+      agentkit,
+    );
+
+    tools.push(getChargesTool);
+
+    const createCheckoutTool = new CdpTool(
+      {
+        name: "create_checkout",
+        description: CREATE_CHECKOUT_PROMPT,
+        argsSchema: CreateCheckoutInput,
+        func: createCheckout,
+      },
+      agentkit,
+    );
+
+    tools.push(createCheckoutTool);
 
     // Create the CdpTool instance
     const hydrateChargeTool = new CdpTool(
