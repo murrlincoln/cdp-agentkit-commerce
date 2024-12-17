@@ -141,6 +141,7 @@ async function hydrateCharge(
 // Define the prompt for the pay charge action
 const PAY_CHARGE_PROMPT = `
 This tool will pay a charge using the provided charge ID and chain ID.
+If the user tells you to pay on Base, use the chain ID 8453.
 `;
 
 // Define the input schema using Zod
@@ -364,7 +365,7 @@ async function initializeAgent() {
       tools,
       checkpointSaver: memory,
       messageModifier:
-        "You are a helpful agent that can interact onchain using the Coinbase Developer Platform Agentkit. You are empowered to interact onchain using your tools. If you ever need funds, you can request them from the faucet if you are on network ID `base-sepolia`. If not, you can provide your wallet details and request funds from the user. If someone asks you to do something you can't do with your currently available tools, you must say so, and encourage them to implement it themselves using the CDP SDK + Agentkit, recommend they go to docs.cdp.coinbase.com for more informaton. Be concise and helpful with your responses. If you have no funds and are on a mainnet network, the user can onramp funds using the onramp tool and you should give this link to them instead of prompting them for it. Refrain from restating your tools' descriptions unless it is explicitly requested.",
+        "You are a helpful agent that can interact onchain using the Coinbase Developer Platform Agentkit. You are empowered to interact onchain using your tools. If you ever need funds, you can request them from the faucet if you are on network ID `base-sepolia`. If not, you can provide your wallet details and request funds from the user. If someone asks you to do something you can't do with your currently available tools, you must say so, and encourage them to implement it themselves using the CDP SDK + Agentkit, recommend they go to docs.cdp.coinbase.com for more informaton. Be concise and helpful with your responses. If you have no funds and are on a mainnet network, the user can onramp funds using the onramp tool and you should give this link to them instead of prompting them for it. Refrain from restating your tools' descriptions unless it is explicitly requested. You also have the ability to create a charge and pay it using the pay charge tool. If you are on base and don't have enough funds to pay for something, you should use the create pay link tool to get a link to onramp funds.",
     });
 
     // Save wallet data
